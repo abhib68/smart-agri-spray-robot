@@ -1,0 +1,943 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <WebServer.h>
+#include <WiFi.h>
+
+// =====================================================
+// Wi-Fi
+// =====================================================
+
+const char *WIFI_SSID = "A";
+const char *WIFI_PASSWORD = "1234567890";
+
+WebServer server(80);
+
+// =====================================================
+// MOTOR PINS
+// =====================================================
+
+// LEFT MOTOR DRIVER
+#define L_IN1 23
+#define L_IN2 19
+#define L_IN3 13
+#define L_IN4 27
+
+// RIGHT MOTOR DRIVER
+#define R_IN1 25
+#define R_IN2 26
+#define R_IN3 32
+#define R_IN4 33
+
+// =====================================================
+// SPRAY SYSTEM
+// =====================================================
+
+#define RED_LED     4
+#define YELLOW_LED  2
+#define GREEN_LED   15
+
+// Pump motor driver
+#define PUMP_IN3 18
+#define PUMP_IN4 17
+
+// =====================================================
+// LCD
+// =====================================================
+
+#define LCD_SDA 21
+#define LCD_SCL 22
+
+LiquidCrystal_I2C *lcd = nullptr;
+bool lcdFound = false;
+
+// =====================================================
+// SPRAY VARIABLES
+// =====================================================
+
+bool spraying = false;
+
+unsigned long sprayStartTime = 0;
+unsigned long sprayDuration = 0;
+
+String sprayStatus = "OFF";
+
+// =====================================================
+// LCD DETECTION
+// =====================================================
+
+bool detectLCD()
+{
+    Wire.begin(LCD_SDA, LCD_SCL);
+
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("I2C LCD SCANNER");
+    Serial.println("==============================");
+
+    byte foundAddress = 0;
+
+    for (byte address = 1; address < 127; address++)
+    {
+        Wire.beginTransmission(address);
+
+        if (Wire.endTransmission() == 0)
+        {
+            Serial.print("I2C device found at 0x");
+
+            if (address < 16)
+                Serial.print("0");
+
+            Serial.println(address, HEX);
+
+            foundAddress = address;
+        }
+    }
+
+    if (foundAddress == 0)
+    {
+        Serial.println("NO I2C DEVICE FOUND!");
+        Serial.println("Check LCD wiring.");
+        return false;
+    }
+
+    Serial.print("LCD Address: 0x");
+
+    if (foundAddress < 16)
+        Serial.print("0");
+
+    Serial.println(foundAddress, HEX);
+
+    lcd = new LiquidCrystal_I2C(foundAddress, 16, 2);
+
+    lcd->init();
+    lcd->backlight();
+    lcd->clear();
+
+    lcdFound = true;
+
+    Serial.println("LCD INITIALIZED!");
+    Serial.println("==============================");
+
+    return true;
+}
+
+// =====================================================
+// LCD DISPLAY FUNCTION
+// =====================================================
+
+void lcdDisplay(String line1, String line2 = "")
+{
+    if (!lcdFound)
+        return;
+
+    lcd->clear();
+
+    lcd->setCursor(0, 0);
+    lcd->print(line1.substring(0, 16));
+
+    lcd->setCursor(0, 1);
+    lcd->print(line2.substring(0, 16));
+}
+
+// =====================================================
+// LCD PRESENTATION SEQUENCES
+// =====================================================
+
+void showStartupSequence()
+{
+    lcdDisplay("SMART AGRI", "INITIALIZING");
+    delay(1500);
+
+    lcdDisplay("RASPBERRY PI", "READY");
+    delay(1500);
+
+    lcdDisplay("SYSTEM", "READY");
+    delay(1200);
+
+    lcdDisplay("AUTONOMOUS", "MODE");
+    delay(1500);
+}
+
+void showLeafDetectionSequence()
+{
+    lcdDisplay("SCANNING", "CROP");
+    delay(1200);
+
+    lcdDisplay("LEAF", "DETECTED");
+    delay(1000);
+
+    lcdDisplay("PHOTO", "CAPTURED");
+    delay(1000);
+
+    lcdDisplay("ANALYZING", "LEAF...");
+    delay(1200);
+}
+
+// =====================================================
+// MOTOR FUNCTIONS
+// =====================================================
+
+void forward()
+{
+    // LEFT
+    digitalWrite(L_IN1, HIGH);
+    digitalWrite(L_IN2, LOW);
+    digitalWrite(L_IN3, HIGH);
+    digitalWrite(L_IN4, LOW);
+
+    // RIGHT
+    digitalWrite(R_IN1, HIGH);
+    digitalWrite(R_IN2, LOW);
+    digitalWrite(R_IN3, HIGH);
+    digitalWrite(R_IN4, LOW);
+
+    Serial.println("MOTOR COMMAND: FORWARD");
+
+    lcdDisplay("MOVING", "FORWARD");
+}
+
+void backward()
+{
+    // LEFT
+    digitalWrite(L_IN1, LOW);
+    digitalWrite(L_IN2, HIGH);
+    digitalWrite(L_IN3, LOW);
+    digitalWrite(L_IN4, HIGH);
+
+    // RIGHT
+    digitalWrite(R_IN1, LOW);
+    digitalWrite(R_IN2, HIGH);
+    digitalWrite(R_IN3, LOW);
+    digitalWrite(R_IN4, HIGH);
+
+    Serial.println("MOTOR COMMAND: BACKWARD");
+
+    lcdDisplay("MOVING", "BACKWARD");
+}
+
+void left()
+{
+    // LEFT BACKWARD
+    digitalWrite(L_IN1, LOW);
+    digitalWrite(L_IN2, HIGH);
+    digitalWrite(L_IN3, LOW);
+    digitalWrite(L_IN4, HIGH);
+
+    // RIGHT FORWARD
+    digitalWrite(R_IN1, HIGH);
+    digitalWrite(R_IN2, LOW);
+    digitalWrite(R_IN3, HIGH);
+    digitalWrite(R_IN4, LOW);
+
+    Serial.println("MOTOR COMMAND: LEFT");
+
+    lcdDisplay("TURNING", "LEFT");
+}
+
+void right()
+{
+    // LEFT FORWARD
+    digitalWrite(L_IN1, HIGH);
+    digitalWrite(L_IN2, LOW);
+    digitalWrite(L_IN3, HIGH);
+    digitalWrite(L_IN4, LOW);
+
+    // RIGHT BACKWARD
+    digitalWrite(R_IN1, LOW);
+    digitalWrite(R_IN2, HIGH);
+    digitalWrite(R_IN3, LOW);
+    digitalWrite(R_IN4, HIGH);
+
+    Serial.println("MOTOR COMMAND: RIGHT");
+
+    lcdDisplay("TURNING", "RIGHT");
+}
+
+void stopMotors()
+{
+    digitalWrite(L_IN1, LOW);
+    digitalWrite(L_IN2, LOW);
+    digitalWrite(L_IN3, LOW);
+    digitalWrite(L_IN4, LOW);
+
+    digitalWrite(R_IN1, LOW);
+    digitalWrite(R_IN2, LOW);
+    digitalWrite(R_IN3, LOW);
+    digitalWrite(R_IN4, LOW);
+
+    Serial.println("MOTOR COMMAND: STOP");
+
+    // Don't display "MOTORS STOP".
+    // Robot should appear to be waiting/scanning autonomously.
+    lcdDisplay("SCANNING", "CROP");
+}
+
+// =====================================================
+// PUMP CONTROL
+// =====================================================
+
+void pumpOn()
+{
+    digitalWrite(PUMP_IN3, HIGH);
+    digitalWrite(PUMP_IN4, LOW);
+
+    Serial.println("PUMP: ON");
+}
+
+void pumpOff()
+{
+    digitalWrite(PUMP_IN3, LOW);
+    digitalWrite(PUMP_IN4, LOW);
+
+    Serial.println("PUMP: OFF");
+}
+
+// =====================================================
+// SPRAY FUNCTIONS
+// =====================================================
+
+void sprayNormal()
+{
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("NORMAL SPRAY SEQUENCE");
+    Serial.println("==============================");
+
+    // AI / vision presentation sequence
+    showLeafDetectionSequence();
+
+    // Green LED
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(YELLOW_LED, LOW);
+    digitalWrite(GREEN_LED, HIGH);
+
+    lcdDisplay("SPRAYING", "NORMAL");
+
+    // Pump ON
+    pumpOn();
+
+    sprayStartTime = millis();
+
+    // 2 seconds
+    sprayDuration = 2000;
+
+    spraying = true;
+    sprayStatus = "NORMAL";
+
+    Serial.println("SPRAY: NORMAL - 2 SECONDS");
+}
+
+void sprayModerate()
+{
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("MODERATE SPRAY SEQUENCE");
+    Serial.println("==============================");
+
+    // AI / vision presentation sequence
+    showLeafDetectionSequence();
+
+    // Yellow LED
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(YELLOW_LED, HIGH);
+    digitalWrite(GREEN_LED, LOW);
+
+    lcdDisplay("SPRAYING", "MODERATE");
+
+    // Pump ON
+    pumpOn();
+
+    sprayStartTime = millis();
+
+    // 4 seconds
+    sprayDuration = 4000;
+
+    spraying = true;
+    sprayStatus = "MODERATE";
+
+    Serial.println("SPRAY: MODERATE - 4 SECONDS");
+}
+
+void sprayHigh()
+{
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("HIGH SPRAY SEQUENCE");
+    Serial.println("==============================");
+
+    // AI / vision presentation sequence
+    showLeafDetectionSequence();
+
+    // Red LED
+    digitalWrite(RED_LED, HIGH);
+    digitalWrite(YELLOW_LED, LOW);
+    digitalWrite(GREEN_LED, LOW);
+
+    lcdDisplay("SPRAYING", "HIGH");
+
+    // Pump ON
+    pumpOn();
+
+    sprayStartTime = millis();
+
+    // 6 seconds
+    sprayDuration = 6000;
+
+    spraying = true;
+    sprayStatus = "HIGH";
+
+    Serial.println("SPRAY: HIGH - 6 SECONDS");
+}
+
+// =====================================================
+// STOP SPRAY
+// =====================================================
+
+void stopSpray()
+{
+    // LEDs OFF
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(YELLOW_LED, LOW);
+    digitalWrite(GREEN_LED, LOW);
+
+    // Pump OFF
+    pumpOff();
+
+    spraying = false;
+    sprayStatus = "OFF";
+
+    Serial.println("SPRAY: OFF");
+
+    lcdDisplay("SPRAY", "COMPLETE");
+
+    delay(1000);
+
+    lcdDisplay("SCANNING", "CROP");
+}
+
+// =====================================================
+// SPRAY TIMER
+// =====================================================
+
+void updateSprayTimer()
+{
+    if (spraying)
+    {
+        if (millis() - sprayStartTime >= sprayDuration)
+        {
+            stopSpray();
+        }
+    }
+}
+
+// =====================================================
+// WIFI CONNECTION
+// =====================================================
+
+void connectWiFi()
+{
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("Connecting to Wi-Fi");
+    Serial.println("==============================");
+
+    // No Wi-Fi information shown on LCD.
+    lcdDisplay("SMART AGRI", "CONNECTING...");
+
+    WiFi.mode(WIFI_STA);
+
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    Serial.print("Connecting");
+
+    unsigned long startTime = millis();
+
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        delay(500);
+
+        Serial.print(".");
+
+        if (millis() - startTime > 20000)
+        {
+            Serial.println();
+            Serial.println("Wi-Fi CONNECTION FAILED!");
+
+            lcdDisplay("NETWORK", "ERROR");
+
+            delay(1500);
+
+            return;
+        }
+    }
+
+    Serial.println();
+    Serial.println("Wi-Fi CONNECTED!");
+
+    Serial.print("SSID: ");
+    Serial.println(WiFi.SSID());
+
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+
+    Serial.print("Signal Strength: ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+
+    Serial.println("==============================");
+
+    delay(500);
+}
+
+// =====================================================
+// WEB PAGE
+// =====================================================
+
+void handleRoot()
+{
+    String html = R"rawliteral(
+
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>Smart Agri Robot</title>
+
+<style>
+
+body
+{
+    font-family: Arial;
+    text-align: center;
+    background: #f2f2f2;
+    margin: 0;
+    padding: 20px;
+}
+
+h1
+{
+    color: #222;
+}
+
+button
+{
+    width: 150px;
+    height: 60px;
+    margin: 8px;
+    font-size: 18px;
+    font-weight: bold;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+}
+
+.motor
+{
+    background: #2196F3;
+    color: white;
+}
+
+.stop
+{
+    background: #f44336;
+    color: white;
+}
+
+.normal
+{
+    background: #4CAF50;
+    color: white;
+}
+
+.moderate
+{
+    background: #FFC107;
+    color: black;
+}
+
+.high
+{
+    background: #F44336;
+    color: white;
+}
+
+.spraystop
+{
+    background: #555;
+    color: white;
+}
+
+#status
+{
+    margin-top: 20px;
+    font-size: 20px;
+    font-weight: bold;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<h1>🌱 Smart Agri Robot</h1>
+
+<h2>Robot Control</h2>
+
+<div>
+
+<button class="motor"
+onclick="sendCommand('/forward')">
+FORWARD
+</button>
+
+</div>
+
+<div>
+
+<button class="motor"
+onclick="sendCommand('/left')">
+LEFT
+</button>
+
+<button class="stop"
+onclick="sendCommand('/stop')">
+STOP
+</button>
+
+<button class="motor"
+onclick="sendCommand('/right')">
+RIGHT
+</button>
+
+</div>
+
+<div>
+
+<button class="motor"
+onclick="sendCommand('/backward')">
+BACKWARD
+</button>
+
+</div>
+
+<hr>
+
+<h2>🌿 Spray Control</h2>
+
+<button class="normal"
+onclick="sendCommand('/spray_normal')">
+NORMAL<br>
+2 SEC
+</button>
+
+<button class="moderate"
+onclick="sendCommand('/spray_moderate')">
+MODERATE<br>
+4 SEC
+</button>
+
+<button class="high"
+onclick="sendCommand('/spray_high')">
+HIGH<br>
+6 SEC
+</button>
+
+<br>
+
+<button class="spraystop"
+onclick="sendCommand('/spray_stop')">
+STOP SPRAY
+</button>
+
+<div id="status">
+Status: Ready
+</div>
+
+<script>
+
+function sendCommand(command)
+{
+    fetch(command)
+    .then(response => response.text())
+    .then(data =>
+    {
+        document.getElementById("status").innerHTML =
+        "Status: " + data;
+    })
+    .catch(error =>
+    {
+        document.getElementById("status").innerHTML =
+        "ERROR: " + error;
+    });
+}
+
+</script>
+
+</body>
+
+</html>
+
+)rawliteral";
+
+    server.send(200, "text/html", html);
+}
+
+// =====================================================
+// MOTOR WEB HANDLERS
+// =====================================================
+
+void handleForward()
+{
+    forward();
+
+    server.send(200, "text/plain", "MOVING FORWARD");
+}
+
+void handleBackward()
+{
+    backward();
+
+    server.send(200, "text/plain", "MOVING BACKWARD");
+}
+
+void handleLeft()
+{
+    left();
+
+    server.send(200, "text/plain", "TURNING LEFT");
+}
+
+void handleRight()
+{
+    right();
+
+    server.send(200, "text/plain", "TURNING RIGHT");
+}
+
+void handleStop()
+{
+    stopMotors();
+
+    server.send(200, "text/plain", "SCANNING CROP");
+}
+
+// =====================================================
+// SPRAY WEB HANDLERS
+// =====================================================
+
+void handleSprayNormal()
+{
+    sprayNormal();
+
+    server.send(200, "text/plain",
+                "LEAF ANALYZED - NORMAL SPRAY");
+}
+
+void handleSprayModerate()
+{
+    sprayModerate();
+
+    server.send(200, "text/plain",
+                "LEAF ANALYZED - MODERATE SPRAY");
+}
+
+void handleSprayHigh()
+{
+    sprayHigh();
+
+    server.send(200, "text/plain",
+                "LEAF ANALYZED - HIGH SPRAY");
+}
+
+void handleSprayStop()
+{
+    stopSpray();
+
+    server.send(200, "text/plain",
+                "SPRAY COMPLETE");
+}
+
+// =====================================================
+// TEST
+// =====================================================
+
+void handleTest()
+{
+    server.send(200, "text/plain",
+                "ESP32 WEB SERVER WORKING");
+
+    Serial.println("WEB TEST COMMAND RECEIVED");
+
+    lcdDisplay("SYSTEM", "TEST");
+}
+
+// =====================================================
+// NOT FOUND
+// =====================================================
+
+void handleNotFound()
+{
+    Serial.print("Unknown URI: ");
+    Serial.println(server.uri());
+
+    server.send(404, "text/plain",
+                "404 - Not Found");
+}
+
+// =====================================================
+// SETUP
+// =====================================================
+
+void setup()
+{
+    Serial.begin(115200);
+
+    // =================================================
+    // PUMP SAFETY - INITIALIZE FIRST
+    // =================================================
+
+    pinMode(PUMP_IN3, OUTPUT);
+    pinMode(PUMP_IN4, OUTPUT);
+
+    // Force pump OFF immediately
+    digitalWrite(PUMP_IN3, LOW);
+    digitalWrite(PUMP_IN4, LOW);
+
+    // =================================================
+    // MOTOR PINS
+    // =================================================
+
+    pinMode(L_IN1, OUTPUT);
+    pinMode(L_IN2, OUTPUT);
+    pinMode(L_IN3, OUTPUT);
+    pinMode(L_IN4, OUTPUT);
+
+    pinMode(R_IN1, OUTPUT);
+    pinMode(R_IN2, OUTPUT);
+    pinMode(R_IN3, OUTPUT);
+    pinMode(R_IN4, OUTPUT);
+
+    // Force motors OFF
+    digitalWrite(L_IN1, LOW);
+    digitalWrite(L_IN2, LOW);
+    digitalWrite(L_IN3, LOW);
+    digitalWrite(L_IN4, LOW);
+
+    digitalWrite(R_IN1, LOW);
+    digitalWrite(R_IN2, LOW);
+    digitalWrite(R_IN3, LOW);
+    digitalWrite(R_IN4, LOW);
+
+    // =================================================
+    // SPRAY LED PINS
+    // =================================================
+
+    pinMode(RED_LED, OUTPUT);
+    pinMode(YELLOW_LED, OUTPUT);
+    pinMode(GREEN_LED, OUTPUT);
+
+    // LEDs OFF
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(YELLOW_LED, LOW);
+    digitalWrite(GREEN_LED, LOW);
+
+    // =================================================
+    // PUMP OFF
+    // =================================================
+
+    pumpOff();
+
+    // =================================================
+    // LCD
+    // =================================================
+
+    detectLCD();
+
+    if (lcdFound)
+    {
+        // Main startup presentation
+        showStartupSequence();
+    }
+
+    // =================================================
+    // INITIAL STATE
+    // =================================================
+
+    stopMotors();
+
+    // Don't show spray complete during boot.
+    // Just make sure everything is physically OFF.
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(YELLOW_LED, LOW);
+    digitalWrite(GREEN_LED, LOW);
+    pumpOff();
+
+    spraying = false;
+    sprayStatus = "OFF";
+
+    // =================================================
+    // WIFI
+    // =================================================
+
+    connectWiFi();
+
+    // =================================================
+    // WEB ROUTES
+    // =================================================
+
+    server.on("/", handleRoot);
+
+    // Motor
+    server.on("/forward", handleForward);
+    server.on("/backward", handleBackward);
+    server.on("/left", handleLeft);
+    server.on("/right", handleRight);
+    server.on("/stop", handleStop);
+
+    // Spray
+    server.on("/spray_normal", handleSprayNormal);
+    server.on("/spray_moderate", handleSprayModerate);
+    server.on("/spray_high", handleSprayHigh);
+    server.on("/spray_stop", handleSprayStop);
+
+    // Test
+    server.on("/test", handleTest);
+
+    // Unknown URLs
+    server.onNotFound(handleNotFound);
+
+    // =================================================
+    // START WEB SERVER
+    // =================================================
+
+    server.begin();
+
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("WEB SERVER STARTED");
+    Serial.print("Open: http://");
+    Serial.print(WiFi.localIP());
+    Serial.println("/");
+    Serial.println("==============================");
+
+    // Don't show WEB CONTROL.
+    // Return to autonomous presentation state.
+    lcdDisplay("AUTONOMOUS", "MODE");
+}
+
+// =====================================================
+// LOOP
+// =====================================================
+
+void loop()
+{
+    server.handleClient();
+
+    updateSprayTimer();
+}
