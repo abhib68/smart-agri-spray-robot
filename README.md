@@ -1,4 +1,4 @@
-# 🌱 Smart Agri Spray Robot
+2 🌱 Smart Agri Spray Robot
 
 Wi-Fi smart farming robot on ESP32: drive it from any phone, and spray crops at 3 intensity levels with LED and LCD feedback. No app needed.
 
@@ -213,6 +213,4 @@ Issues and pull requests are welcome. If you build one, share a photo in Discuss
 
 MIT License. See [LICENSE](LICENSE).
 
-## Author
 
-Built by **YOUR NAME**. Feel free to connect on [LinkedIn](https://linkedin.com/in/your-profile).
